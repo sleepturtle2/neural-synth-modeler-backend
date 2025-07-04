@@ -1,0 +1,132 @@
+flowchart TD
+    %% Client-side audio flow
+    REACT["Webapp"]
+    COMP["(1) Compress Audio<br/>(in Browser)"]
+    SEND_COMP["(1) Send Compressed Audio <br/> POST Request<br/>to Backend"]
+    UPLOAD_UNCOMP["(2) Upload Uncompressed<br/>Audio to Perm Storage"]
+    PERM[["Permanent<br/>Audio Storage<br/>(S3, Uncompressed)"]]:::s3
+    REACT --> COMP
+    COMP --> SEND_COMP
+    SEND_COMP --> POOL
+    SEND_COMP --> UPLOAD_UNCOMP
+    UPLOAD_UNCOMP -->|"PUT Uncompressed<br/>Audio to Perm Storage"| PERM
+
+    %% HTTP Keep-Alive Pool (Client ↔ Backend)
+    subgraph "**HTTP Keep-Alive Pool (Client ↔ Backend)**"
+        POOL["HTTP<br/>Connection Pool"]
+        REACT <--> POOL
+    end
+
+    %% Backend Async Thread/Event Loop
+    subgraph "**Java Backend**"
+        THREADS["Async<br/>Thread/<br/>Event Loop<br/>Pool<br/>(Non-blocking)"]
+        B["Spring Boot<br/>REST API<br/>(Async, WebFlux)"]
+        CID["Generate<br/>Correlation ID<br/>(UUID)"]
+        ENQ["Enqueue<br/>Request<br/>to RabbitMQ<br/>(with Correlation ID)"]
+        WAIT["Async Wait<br/>(No Thread Held)"]
+        MATCH["Match Response<br/>by Correlation ID"]
+        RESP["Send HTTP<br/>Response<br/>to Client"]
+        LOG["Log Perm Store ID,<br/>Timestamp, Request<br/>(Thread)"]
+        ANALYTICS["Sync Analytics<br/>(Duration, Perf,<br/>Loss, etc.)<br/>(Thread)"]
+        POOL --> THREADS
+        THREADS --> B
+        B --> CID
+        CID -->|"Upload Compressed<br/>Audio to Temp S3"| TEMP
+        TEMP -->|"Audio Ref"| ENQ
+        ENQ --> Q1
+        Q1 --> LB
+        MATCH --> WAIT
+        WAIT --> RESP
+        RESP -->|"HTTP<br/>Response"| POOL
+    end
+
+    %% Persistence Connection Pool
+    PERSIST_POOL["Persistence<br/>Connection Pool"]:::persistpool
+    %% Java Backend to Persistence Pool
+    B -- "DB/Cache/Storage/Analytics Ops" --> PERSIST_POOL
+
+    %% Persistence & Caching (outside Java Backend)
+    DB[("Request/Response DB<br/>(MySQL/PostgreSQL)")]:::db
+    REDIS{{"Redis<br/>(Status<br/>Cache)"}}:::redis
+    TEMP[["Temp Audio<br/>Storage<br/>(S3)"]]:::s3
+    OBJ[["Object<br/>Storage<br/>(S3)<br/>Persistent Audio<br/>& Preset Files"]]:::s3
+    PERM[["Permanent<br/>Audio Storage<br/>(S3, Uncompressed)"]]:::s3
+    ANALYTICSDB[("Analytics DB<br/>(MySQL/PostgreSQL)")]:::db
+
+    %% Persistence Pool to Persistence Nodes
+    PERSIST_POOL --> DB
+    PERSIST_POOL --> REDIS
+    PERSIST_POOL --> TEMP
+    PERSIST_POOL --> OBJ
+    PERSIST_POOL --> PERM
+    PERSIST_POOL --> ANALYTICSDB
+
+    %% Background Worker
+    WORKER["Background<br/>Worker<br/>(Async Archival/<br/>Compression)"]
+    MATCH -->|"Store Preset<br/>& Audio<br/>(Async)"| WORKER
+    WORKER -->|"Move to<br/>Object Storage<br/>and Update DB"| OBJ
+    WORKER -->|"Update File Ref/<br/>Metadata"| DB
+
+    %% Analytics Thread
+    LOG -->|"Trigger Analytics Thread"| ANALYTICS
+    ANALYTICS -->|"Sync Perf,<br/>Loss, etc."| ANALYTICSDB
+
+    %% Logging
+    MATCH -->|"Trigger Log Thread"| LOG
+    LOG -->|"Log Perm Store ID,<br/>Timestamp, Request"| DB
+
+    %% Status/Cache Updates
+    ENQ -->|"Write Request<br/>Status: pending"| DB
+    ENQ -->|"Cache Status"| REDIS
+    MATCH -->|"Update Status/<br/>Result"| DB
+    MATCH -->|"Update Cache"| REDIS
+    REDIS -->|"Fast Status<br/>Lookup"| B
+
+    %% Backend-Model Keep-Alive Pool
+    subgraph "**HTTP Keep-Alive Pool (Backend ↔ Model Inference)**"
+        LB["Load<br/>Balancer<br/>(Nginx)"]
+        subgraph "**Model Inference Pool**"
+            direction LR
+            C1["BentoML<br/>Container 1<br/>(REST API)<br/>(Model Loaded)<br/>(Multi-worker)"]
+            C2["BentoML<br/>Container 2<br/>(REST API)<br/>(Model Loaded)<br/>(Multi-worker)"]
+            CN["BentoML<br/>Container N<br/>(REST API)<br/>(Model Loaded)<br/>(Multi-worker)"]
+        end
+        LB <--> C1
+        LB <--> C2
+        LB <--> CN
+    end
+
+    %% LB Analytics to Analytics DB
+    LB -- "Request-Response, Time, Chosen Machine Analytics" --> ANALYTICSDB
+
+    %% RabbitMQ
+    Q1>"Request<br/>Queue"]:::rmq
+    Q2>"Response<br/>Queue"]:::rmq
+    ENQ -->|"Cache Status"| REDIS
+    Q1 --> LB
+    C1 -->|"Status Updates<br/>& Result<br/>(with Correlation ID)"| Q2
+    C2 -->|"Status Updates<br/>& Result<br/>(with Correlation ID)"| Q2
+    CN -->|"Status Updates<br/>& Result<br/>(with Correlation ID)"| Q2
+    Q2 --> MATCH
+
+    classDef queue fill:#f9f,stroke:#333,stroke-width:2px;
+    class Q1,Q2 queue;
+    classDef rmq fill:#f9f,stroke:#333,stroke-width:2px;
+    class Q1,Q2 rmq;
+    classDef async fill:#cff,stroke:#333,stroke-width:2px;
+    class WAIT,THREADS async;
+    classDef corrid fill:#fcf,stroke:#333,stroke-width:2px;
+    class CID,MATCH corrid;
+    classDef pool fill:#ffc,stroke:#333,stroke-width:2px;
+    class POOL pool;
+    classDef persistpool fill:#b3e5fc,stroke:#333,stroke-width:2px,stroke-dasharray: 5 5;
+    class PERSIST_POOL persistpool;
+    classDef docker fill:#e0f7fa,stroke:#333,stroke-width:2px;
+    class C1,C2,CN docker;
+    classDef db fill:#e8f5e9,stroke:#333,stroke-width:2px;
+    class DB,ANALYTICSDB db;
+    classDef redis fill:#ffe0b2,stroke:#333,stroke-width:2px;
+    class REDIS redis;
+    classDef s3 fill:#e3e0ff,stroke:#333,stroke-width:2px;
+    class TEMP,OBJ,PERM s3;
+    classDef analytics fill:#fff3e0,stroke:#333,stroke-width:2px;

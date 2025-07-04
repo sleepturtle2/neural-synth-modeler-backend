@@ -1,0 +1,27 @@
+erDiagram
+    INFERENCE_REQUEST {
+        VARCHAR(64) id PK
+        VARCHAR(32) model
+        VARCHAR(32) synth
+        VARCHAR(32) status
+        DATETIME(3) created_at
+        DATETIME(3) updated_at
+        VARCHAR(64) audio_ref
+        VARCHAR(64) result_ref
+        TEXT error
+        JSON meta
+    }
+
+    AUDIO_REQUEST_COLLECTION {
+        ObjectId _id PK
+        String inference_request_id FK
+        Binary audio_compressed
+        INT audio_size_compressed
+        Binary preset_file
+        Number created_at
+        Number updated_at
+        Object preset_metadata
+        Object other_metadata
+    }
+
+    INFERENCE_REQUEST ||--o{ AUDIO_REQUEST_COLLECTION : "audio_ref = _id / inference_request_id = id"
