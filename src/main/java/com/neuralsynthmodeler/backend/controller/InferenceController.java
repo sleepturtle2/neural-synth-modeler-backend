@@ -19,7 +19,9 @@ import java.time.format.DateTimeFormatter;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.beans.factory.annotation.Value;
 import java.time.Duration;
+import org.springframework.web.bind.annotation.CrossOrigin;
 
+@CrossOrigin(origins = "http://localhost:3000")
 @RestController
 @RequestMapping("/v1")
 public class InferenceController {
