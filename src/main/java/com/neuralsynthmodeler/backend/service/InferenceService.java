@@ -51,15 +51,33 @@ public class InferenceService {
         PENDING, PROCESSING, DONE, ERROR
     }
 
+    /**
+     * Check if the byte array is GZIP compressed by looking at the magic bytes
+     * GZIP files start with the magic bytes 0x1f 0x8b
+     */
+    private boolean isGzipCompressed(byte[] data) {
+        return data.length >= 2 && (data[0] & 0xFF) == 0x1f && (data[1] & 0xFF) == 0x8b;
+    }
 
 
-    public Mono<Map<String, Object>> handleInference(byte[] gzippedAudio) {
+
+    public Mono<Map<String, Object>> handleInference(byte[] audioData) {
         String requestId = UUID.randomUUID().toString();
         logger.info("Starting inference for request ID: {}", requestId);
         
         try {
-            // Decompress audio to get original size
-            byte[] audioData = GzipUtils.decompress(gzippedAudio);
+            // Check if the data is GZIP compressed by looking at the magic bytes
+            byte[] decompressedAudio;
+            int originalSize = audioData.length;
+            
+            if (isGzipCompressed(audioData)) {
+                logger.info("Detected GZIP compressed data, decompressing...");
+                decompressedAudio = GzipUtils.decompress(audioData);
+                logger.info("Decompressed from {} bytes to {} bytes", originalSize, decompressedAudio.length);
+            } else {
+                logger.info("Detected uncompressed audio data, using as-is");
+                decompressedAudio = audioData;
+            }
             
             // Store audio in MongoDB
             String audioRef = audioStorageService.storeAudio(audioData);
@@ -72,8 +90,8 @@ public class InferenceService {
                     .createdAt(Instant.now())
                     .updatedAt(Instant.now())
                     .audioRef(audioRef)
-                    .audioSizeGzipped(gzippedAudio.length)
-                    .audioSizeUncompressed(audioData.length)
+                    .audioSizeGzipped(originalSize)
+                    .audioSizeUncompressed(decompressedAudio.length)
                     .build();
             
             inferenceRequestRepository.save(entity);
@@ -82,7 +100,7 @@ public class InferenceService {
             requestStatusMap.put(requestId, RequestStatus.PENDING);
             
             // Process asynchronously
-            processInferenceAsync(requestId, gzippedAudio);
+            processInferenceAsync(requestId, audioData);
             
             Map<String, Object> response = new HashMap<>();
             response.put("request_id", requestId);
@@ -98,24 +116,31 @@ public class InferenceService {
         }
     }
 
-    private void processInferenceAsync(String requestId, byte[] gzippedAudio) {
+    private void processInferenceAsync(String requestId, byte[] audioData) {
         Mono.fromCallable(() -> {
             try {
-                logger.info("Decompressing audio for request ID: {}", requestId);
+                logger.info("Processing audio for request ID: {}", requestId);
                 requestStatusMap.put(requestId, RequestStatus.PROCESSING);
                 
-                // Decompress the gzipped audio
-                byte[] audioData = GzipUtils.decompress(gzippedAudio);
-                logger.info("Decompressed audio size: {} bytes", audioData.length);
+                // Check if the data is GZIP compressed and decompress if needed
+                byte[] decompressedAudio;
+                if (isGzipCompressed(audioData)) {
+                    logger.info("Decompressing GZIP audio for request ID: {}", requestId);
+                    decompressedAudio = GzipUtils.decompress(audioData);
+                    logger.info("Decompressed audio size: {} bytes", decompressedAudio.length);
+                } else {
+                    logger.info("Using uncompressed audio for request ID: {}", requestId);
+                    decompressedAudio = audioData;
+                }
                 
-                return audioData;
+                return decompressedAudio;
             } catch (IOException e) {
-                logger.error("Failed to decompress audio for request ID: {}", requestId, e);
+                logger.error("Failed to process audio for request ID: {}", requestId, e);
                 requestStatusMap.put(requestId, RequestStatus.ERROR);
-                throw new RuntimeException("Failed to decompress audio", e);
+                throw new RuntimeException("Failed to process audio", e);
             }
         })
-        .flatMap(audioData -> sendToBentoML(requestId, audioData))
+        .flatMap(decompressedAudio -> sendToBentoML(requestId, decompressedAudio))
         .subscribe(
             result -> {
                 logger.info("Inference completed successfully for request ID: {}", requestId);
@@ -132,27 +157,13 @@ public class InferenceService {
     private Mono<byte[]> sendToBentoML(String requestId, byte[] audioData) {
         logger.info("Sending audio to BentoML for request ID: {}", requestId);
         
-        // Create a proper file resource for multipart upload with correct content type
-        org.springframework.core.io.ByteArrayResource audioResource = new org.springframework.core.io.ByteArrayResource(audioData) {
-            @Override
-            public String getFilename() {
-                return "audio.wav";
-            }
-        };
-        
-        // Create multipart form data with proper content type
-        MultiValueMap<String, Object> parts = new LinkedMultiValueMap<>();
-        org.springframework.http.HttpHeaders headers = new org.springframework.http.HttpHeaders();
-        headers.setContentType(org.springframework.http.MediaType.parseMediaType("audio/wav"));
-        parts.add("audio", new org.springframework.http.HttpEntity<>(audioResource, headers));
-        
         String predictUrl = modelServerUrl + "/predict";
         logger.info("Sending request to: {}", predictUrl);
         
         return webClient.post()
                 .uri(predictUrl)
-                .contentType(MediaType.MULTIPART_FORM_DATA)
-                .body(BodyInserters.fromMultipartData(parts))
+                .contentType(org.springframework.http.MediaType.parseMediaType("audio/wav"))
+                .bodyValue(audioData)
                 .retrieve()
                 .bodyToMono(byte[].class)
                 .doOnSuccess(result -> logger.info("Received response from BentoML for request ID: {}, size: {} bytes", requestId, result.length))

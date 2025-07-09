@@ -19,9 +19,8 @@ import java.time.format.DateTimeFormatter;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.beans.factory.annotation.Value;
 import java.time.Duration;
-import org.springframework.web.bind.annotation.CrossOrigin;
 
-@CrossOrigin(origins = "http://localhost:3000")
+
 @RestController
 @RequestMapping("/v1")
 public class InferenceController {
@@ -139,6 +138,40 @@ public class InferenceController {
             }
             
             logger.info("Serving preset file for request ID: {}, size: {} bytes", requestId, presetData.length);
+            
+            // Clean up the result after serving
+            inferenceService.clearResult(requestId);
+            
+            return ResponseEntity.ok()
+                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                    .header("Content-Disposition", "attachment; filename=\"preset_" + requestId + ".vital\"")
+                    .body(presetData);
+        });
+    }
+
+    @GetMapping("/infer-audio/download/{id}")
+    public Mono<ResponseEntity<byte[]>> downloadPreset(@PathVariable("id") String requestId) {
+        return Mono.fromSupplier(() -> {
+            InferenceService.RequestStatus status = inferenceService.getStatus(requestId);
+            
+            if (status == null) {
+                logger.warn("Preset download request for unknown request ID: {}", requestId);
+                return ResponseEntity.notFound().build();
+            }
+            
+            if (status != InferenceService.RequestStatus.DONE) {
+                logger.warn("Preset download request for incomplete inference: {} (status: {})", requestId, status);
+                return ResponseEntity.status(HttpStatus.ACCEPTED)
+                        .body(("Inference not complete. Status: " + status.name()).getBytes());
+            }
+            
+            byte[] presetData = inferenceService.getResult(requestId);
+            if (presetData == null) {
+                logger.warn("No preset data found for request ID: {}", requestId);
+                return ResponseEntity.notFound().build();
+            }
+            
+            logger.info("Serving preset file for download request ID: {}, size: {} bytes", requestId, presetData.length);
             
             // Clean up the result after serving
             inferenceService.clearResult(requestId);
