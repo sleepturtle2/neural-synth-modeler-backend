@@ -5,7 +5,6 @@ import org.springframework.web.bind.annotation.*;
 import java.util.*;
 import org.springframework.http.MediaType;
 import java.io.IOException;
-import com.neuralsynthmodeler.backend.util.GzipUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import reactor.core.publisher.Mono;
 import org.springframework.http.HttpStatus;
@@ -13,12 +12,8 @@ import org.springframework.web.server.ResponseStatusException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import com.neuralsynthmodeler.backend.service.InferenceService;
-import org.springframework.web.multipart.MultipartFile;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.beans.factory.annotation.Value;
-import java.time.Duration;
 
 
 @RestController
@@ -92,13 +87,13 @@ public class InferenceController {
     }
 
     @PostMapping(value = "/models/{modelName}/infer", consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
-    public Mono<Map<String, Object>> infer(@PathVariable String modelName, @RequestBody byte[] gzippedAudio) {
+    public Mono<Map<String, Object>> infer(@PathVariable String modelName, @RequestBody byte[] audioData) {
         if (!SUPPORTED_MODEL.equalsIgnoreCase(modelName)) {
             logger.warn("Infer request for unsupported model: {}", modelName);
             return Mono.error(new ResponseStatusException(HttpStatus.NOT_FOUND, "Model not supported"));
         }
-        logger.info("Received infer request for model '{}', gzipped audio size: {} bytes", modelName, gzippedAudio.length);
-        return inferenceService.handleInference(gzippedAudio)
+        logger.info("Received infer request for model '{}', audio data size: {} bytes", modelName, audioData.length);
+        return inferenceService.handleInference(audioData)
             .doOnSubscribe(sub -> logger.info("Started inference flow for request"))
             .doOnSuccess(resp -> logger.info("Inference flow completed for request, response: {}", resp))
             .doOnError(e -> logger.error("Error in inference flow: {}", e.getMessage(), e));
@@ -183,60 +178,5 @@ public class InferenceController {
         });
     }
 
-    @PostMapping(value = "/predict", consumes = MediaType.MULTIPART_FORM_DATA_VALUE, produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
-    public Mono<ResponseEntity<byte[]>> predict(@RequestParam("audio") MultipartFile audioFile) {
-        return Mono.fromCallable(() -> {
-            try {
-                logger.info("Received predict request with audio file: {}, size: {} bytes", 
-                    audioFile.getOriginalFilename(), audioFile.getSize());
-                
-                // Validate file
-                if (audioFile.isEmpty()) {
-                    logger.warn("Empty audio file received");
-                    return ResponseEntity.badRequest().body("Empty audio file".getBytes());
-                }
-                
-                if (!audioFile.getContentType().startsWith("audio/")) {
-                    logger.warn("Invalid content type: {}", audioFile.getContentType());
-                    return ResponseEntity.badRequest().body("Invalid audio file type".getBytes());
-                }
-                
-                // Get audio data
-                byte[] audioData = audioFile.getBytes();
-                
-                // Call Python backend service to get preset
-                logger.info("Calling Python backend service at: {}", pythonServiceUrl);
-                byte[] presetData = webClient.post()
-                    .uri("/predict")
-                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                    .bodyValue(audioData)
-                    .retrieve()
-                    .bodyToMono(byte[].class)
-                    .timeout(Duration.ofMinutes(2)) // 2 minute timeout
-                    .block(); // Wait for Python service to return preset
-                
-                if (presetData == null || presetData.length == 0) {
-                    logger.warn("No preset data received from backend model");
-                    return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                            .body("Failed to generate preset from backend model".getBytes());
-                }
-                
-                // Generate filename with timestamp
-                String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss"));
-                String filename = "output_" + timestamp + ".vital";
-                
-                logger.info("Received preset from Python service: {}, size: {} bytes", filename, presetData.length);
-                
-                return ResponseEntity.ok()
-                        .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                        .header("Content-Disposition", "attachment; filename=\"" + filename + "\"")
-                        .body(presetData);
-                        
-            } catch (Exception e) {
-                logger.error("Error processing audio file: {}", e.getMessage(), e);
-                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                        .body("Error processing audio file".getBytes());
-            }
-        }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic()); // Use bounded elastic for blocking calls
-    }
+
 }

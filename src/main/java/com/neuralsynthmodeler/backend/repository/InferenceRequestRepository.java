@@ -1,6 +1,7 @@
 package com.neuralsynthmodeler.backend.repository;
 
 import com.neuralsynthmodeler.backend.model.InferenceRequestEntity;
+import com.neuralsynthmodeler.backend.model.SynthType;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Repository;
 
@@ -37,9 +38,10 @@ public class InferenceRequestRepository {
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
             
+            // Set all parameters using prepared statement
             stmt.setString(1, entity.getId());
             stmt.setString(2, entity.getModel());
-            stmt.setString(3, "vital"); // Default synth value
+            stmt.setString(3, entity.getSynth() != null ? entity.getSynth() : SynthType.VITAL.getValue());
             stmt.setString(4, entity.getStatus());
             stmt.setTimestamp(5, Timestamp.from(entity.getCreatedAt()));
             stmt.setTimestamp(6, Timestamp.from(entity.getUpdatedAt()));
@@ -104,11 +106,101 @@ public class InferenceRequestRepository {
             throw new RuntimeException("Error deleting inference request", e);
         }
     }
+    
+    public List<InferenceRequestEntity> findByStatus(String status) {
+        String sql = "SELECT * FROM INFERENCE_REQUEST WHERE status = ? ORDER BY created_at DESC";
+        List<InferenceRequestEntity> entities = new ArrayList<>();
+        
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            
+            stmt.setString(1, status);
+            ResultSet rs = stmt.executeQuery();
+            
+            while (rs.next()) {
+                entities.add(mapResultSetToEntity(rs));
+            }
+            return entities;
+        } catch (SQLException e) {
+            throw new RuntimeException("Error finding inference requests by status", e);
+        }
+    }
+    
+    public List<InferenceRequestEntity> findByModel(String model) {
+        String sql = "SELECT * FROM INFERENCE_REQUEST WHERE model = ? ORDER BY created_at DESC";
+        List<InferenceRequestEntity> entities = new ArrayList<>();
+        
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            
+            stmt.setString(1, model);
+            ResultSet rs = stmt.executeQuery();
+            
+            while (rs.next()) {
+                entities.add(mapResultSetToEntity(rs));
+            }
+            return entities;
+        } catch (SQLException e) {
+            throw new RuntimeException("Error finding inference requests by model", e);
+        }
+    }
+    
+    public List<InferenceRequestEntity> findBySynth(String synth) {
+        String sql = "SELECT * FROM INFERENCE_REQUEST WHERE synth = ? ORDER BY created_at DESC";
+        List<InferenceRequestEntity> entities = new ArrayList<>();
+        
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            
+            stmt.setString(1, synth);
+            ResultSet rs = stmt.executeQuery();
+            
+            while (rs.next()) {
+                entities.add(mapResultSetToEntity(rs));
+            }
+            return entities;
+        } catch (SQLException e) {
+            throw new RuntimeException("Error finding inference requests by synth", e);
+        }
+    }
+    
+    public int updateStatus(String id, String status) {
+        String sql = "UPDATE INFERENCE_REQUEST SET status = ?, updated_at = ? WHERE id = ?";
+        
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            
+            stmt.setString(1, status);
+            stmt.setTimestamp(2, Timestamp.from(Instant.now()));
+            stmt.setString(3, id);
+            
+            return stmt.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Error updating inference request status", e);
+        }
+    }
+    
+    public int updateResultRef(String id, String resultRef) {
+        String sql = "UPDATE INFERENCE_REQUEST SET result_ref = ?, updated_at = ? WHERE id = ?";
+        
+        try (Connection conn = dataSource.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            
+            stmt.setString(1, resultRef);
+            stmt.setTimestamp(2, Timestamp.from(Instant.now()));
+            stmt.setString(3, id);
+            
+            return stmt.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Error updating inference request result_ref", e);
+        }
+    }
 
     private InferenceRequestEntity mapResultSetToEntity(ResultSet rs) throws SQLException {
         return InferenceRequestEntity.builder()
                 .id(rs.getString("id"))
                 .model(rs.getString("model"))
+                .synth(rs.getString("synth"))
                 .status(rs.getString("status"))
                 .createdAt(rs.getTimestamp("created_at").toInstant())
                 .updatedAt(rs.getTimestamp("updated_at").toInstant())
