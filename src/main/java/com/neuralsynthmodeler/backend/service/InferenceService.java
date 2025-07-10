@@ -26,6 +26,7 @@ import com.neuralsynthmodeler.backend.util.VitalPresetUtils;
 import com.neuralsynthmodeler.backend.repository.InferenceRequestRepository;
 import com.neuralsynthmodeler.backend.model.InferenceRequestEntity;
 import com.neuralsynthmodeler.backend.model.SynthType;
+
 import java.time.Instant;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -140,16 +141,26 @@ public class InferenceService {
             result -> {
                 logger.info("Inference completed successfully for request ID: {}", requestId);
                 
-                // Store preset in MongoDB with synth type
-                String presetRef = audioStorageService.storePreset(result, "vital");
-                logger.info("Preset stored in MongoDB with reference: {}", presetRef);
+                // Get audioRef from the entity
+                Optional<InferenceRequestEntity> entityOpt = inferenceRequestRepository.findById(requestId);
+                String audioRef = entityOpt.map(InferenceRequestEntity::getAudioRef).orElse(null);
                 
-                // Update MySQL record with result_ref and status
-                updateInferenceResult(requestId, presetRef, RequestStatus.DONE, null);
-                
-                // Keep in cache for immediate access
-                resultCache.put(requestId, result);
-                requestStatusMap.put(requestId, RequestStatus.DONE);
+                if (audioRef != null) {
+                    // Store preset in MongoDB with synth type and audio reference
+                    String presetRef = audioStorageService.storePreset(result, "vital", audioRef);
+                    logger.info("Preset stored in MongoDB with reference: {} (linked to audio: {})", presetRef, audioRef);
+                    
+                    // Update MySQL record with result_ref and status
+                    updateInferenceResult(requestId, presetRef, RequestStatus.DONE, null);
+                    
+                    // Keep in cache for immediate access
+                    resultCache.put(requestId, result);
+                    requestStatusMap.put(requestId, RequestStatus.DONE);
+                } else {
+                    logger.error("Could not find audioRef for request ID: {}", requestId);
+                    updateInferenceResult(requestId, null, RequestStatus.ERROR, "Audio reference not found");
+                    requestStatusMap.put(requestId, RequestStatus.ERROR);
+                }
             },
             error -> {
                 logger.error("Inference failed for request ID: {}", requestId, error);
@@ -194,9 +205,10 @@ public class InferenceService {
             return;
         }
         
-        // Get synth type from the request entity
+        
         try {
             Optional<InferenceRequestEntity> entityOpt = inferenceRequestRepository.findById(requestId);
+            // Get synth type from the request entity
             String synthType = entityOpt.map(InferenceRequestEntity::getSynth).orElse("vital");
             
             boolean isValid = validatePresetData(presetData, synthType);

@@ -1,35 +1,43 @@
 package com.neuralsynthmodeler.backend.service;
 
-import com.mongodb.client.MongoDatabase;
-import com.mongodb.client.MongoCollection;
-import com.mongodb.client.model.Filters;
-import com.mongodb.client.model.Updates;
-import com.mongodb.client.result.InsertOneResult;
-import com.mongodb.client.result.UpdateResult;
-import org.bson.Document;
-import org.bson.types.Binary;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Service;
-
 import java.util.Optional;
 
-@Service
+/**
+ * Service interface for audio file storage operations
+ */
 public interface AudioStorageService {
+    
+    /**
+     * Store audio data with default size (no compression info)
+     */
     String storeAudio(byte[] audioData);
+    
+    /**
+     * Store audio data with compression information
+     */
     String storeAudio(byte[] audioData, int compressedSize, int uncompressedSize);
+    
+    /**
+     * Retrieve audio data by reference
+     */
     Optional<byte[]> retrieveAudio(String audioRef);
+    
+    /**
+     * Delete audio data by reference
+     */
     void deleteAudio(String audioRef);
     
-    // Audio-Preset relationship methods
-    void linkAudioToPreset(String audioRef, String presetRef);
+    /**
+     * Get preset reference for a given audio reference
+     */
     Optional<String> getPresetRefForAudio(String audioRef);
-    Optional<String> getAudioRefForPreset(String presetRef);
     
-    // Preset storage methods
+    // Preset storage methods (temporary - will be moved to separate service)
     String storePreset(byte[] presetData, String synthType, String audioRef);
     Optional<byte[]> retrievePreset(String presetRef);
     Optional<PresetMetadata> retrievePresetMetadata(String presetRef);
     void deletePreset(String presetRef);
+    Optional<String> getAudioRefForPreset(String presetRef);
     
     /**
      * Metadata class for preset information

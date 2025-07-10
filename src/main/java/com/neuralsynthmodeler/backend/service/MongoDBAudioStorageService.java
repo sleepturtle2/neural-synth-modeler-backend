@@ -25,14 +25,12 @@ public class MongoDBAudioStorageService implements AudioStorageService {
     private final MongoDatabase mongoDatabase;
     private final MongoCollection<Document> audioCollection;
     private final MongoCollection<Document> presetCollection;
-    private final MongoCollection<Document> audioPresetLinksCollection;
 
     @Autowired
     public MongoDBAudioStorageService(MongoDatabase mongoDatabase) {
         this.mongoDatabase = mongoDatabase;
         this.audioCollection = mongoDatabase.getCollection("audio_files");
         this.presetCollection = mongoDatabase.getCollection("preset_files");
-        this.audioPresetLinksCollection = mongoDatabase.getCollection("audio_preset_links");
     }
 
     @Override
@@ -49,6 +47,7 @@ public class MongoDBAudioStorageService implements AudioStorageService {
                 .append("data", new Binary(audioData))
                 .append("compressed_size", compressedSize)
                 .append("uncompressed_size", uncompressedSize)
+                .append("preset_ref", null) // Will be updated when preset is stored
                 .append("created_at", System.currentTimeMillis());
         
         try{
@@ -105,19 +104,27 @@ public class MongoDBAudioStorageService implements AudioStorageService {
         Document presetDoc = new Document()
                 .append("_id", presetRef)
                 .append("data", new Binary(presetData))
+                .append("audio_ref", audioRef)
                 .append("synth_type", synthType)
                 .append("preset_name", presetName)
                 .append("author", author)
                 .append("preset_style", presetStyle)
-                .append("preset_styles", presetStyles)
                 .append("synth_version", synthVersion)
                 .append("size", presetData.length)
                 .append("created_at", createdAt);
         
         try {
             InsertOneResult result = presetCollection.insertOne(presetDoc);
-            logger.info("Stored preset in MongoDB - ID: {}, synth: {}, name: '{}', author: '{}', size: {} bytes", 
-                presetRef, synthType, presetName, author, presetData.length);
+            logger.info("Stored preset in MongoDB - ID: {}, synth: {}, name: '{}', author: '{}', size: {} bytes, audio_ref: {}", 
+                presetRef, synthType, presetName, author, presetData.length, audioRef);
+            
+            // Update the audio record with the preset reference
+            audioCollection.updateOne(
+                Filters.eq("_id", audioRef),
+                Updates.set("preset_ref", presetRef)
+            );
+            logger.info("Updated audio record {} with preset reference {}", audioRef, presetRef);
+            
             return presetRef;
         } catch (Exception e) {
             logger.error("Failed to store preset in MongoDB - ID: {}, error: {}", presetRef, e.getMessage());
@@ -161,43 +168,21 @@ public class MongoDBAudioStorageService implements AudioStorageService {
     }
     
     @Override
-    public void linkAudioToPreset(String audioRef, String presetRef) {
-        Document linkDoc = new Document()
-                .append("_id", audioRef) // Use audioRef as the primary key
-                .append("audio_ref", audioRef)
-                .append("preset_ref", presetRef)
-                .append("created_at", System.currentTimeMillis());
-        
-        try {
-            // Use upsert to handle cases where audio might already be linked
-            audioPresetLinksCollection.replaceOne(
-                Filters.eq("_id", audioRef), 
-                linkDoc, 
-                new com.mongodb.client.model.ReplaceOptions().upsert(true)
-            );
-            logger.info("Linked audio {} to preset {}", audioRef, presetRef);
-        } catch (Exception e) {
-            logger.error("Failed to link audio {} to preset {}: {}", audioRef, presetRef, e.getMessage());
-            throw e;
-        }
-    }
-    
-    @Override
     public Optional<String> getPresetRefForAudio(String audioRef) {
-        Document linkDoc = audioPresetLinksCollection.find(Filters.eq("_id", audioRef)).first();
-        if (linkDoc != null) {
-            String presetRef = linkDoc.getString("preset_ref");
-            return Optional.of(presetRef);
+        Document audioDoc = audioCollection.find(Filters.eq("_id", audioRef)).first();
+        if (audioDoc != null) {
+            String presetRef = audioDoc.getString("preset_ref");
+            return Optional.ofNullable(presetRef);
         }
         return Optional.empty();
     }
     
     @Override
     public Optional<String> getAudioRefForPreset(String presetRef) {
-        Document linkDoc = audioPresetLinksCollection.find(Filters.eq("preset_ref", presetRef)).first();
-        if (linkDoc != null) {
-            String audioRef = linkDoc.getString("audio_ref");
-            return Optional.of(audioRef);
+        Document presetDoc = presetCollection.find(Filters.eq("_id", presetRef)).first();
+        if (presetDoc != null) {
+            String audioRef = presetDoc.getString("audio_ref");
+            return Optional.ofNullable(audioRef);
         }
         return Optional.empty();
     }
