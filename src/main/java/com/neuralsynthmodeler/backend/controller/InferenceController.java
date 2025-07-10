@@ -156,13 +156,26 @@ public class InferenceController {
     @GetMapping(value = "/infer-audio/stream-status/{id}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<Map<String, Object>>> streamStatus(@PathVariable("id") String requestId) {
         logger.info("Starting SSE stream for request ID: {}", requestId);
-        
         return inferenceService.getStatusStream(requestId)
             .map(status -> {
                 Map<String, Object> data = new HashMap<>();
                 data.put("status", status.name());
                 data.put("timestamp", System.currentTimeMillis());
-                
+                if (status == InferenceService.RequestStatus.ERROR) {
+                    // Fetch error message from the inference request entity
+                    String errorMsg = null;
+                    try {
+                        var entityOpt = inferenceService.getRequestEntity(requestId);
+                        if (entityOpt.isPresent()) {
+                            errorMsg = entityOpt.get().getError();
+                        }
+                    } catch (Exception e) {
+                        logger.warn("Could not fetch error message for request ID {}: {}", requestId, e.getMessage());
+                    }
+                    if (errorMsg != null) {
+                        data.put("error", errorMsg);
+                    }
+                }
                 return ServerSentEvent.<Map<String, Object>>builder()
                     .data(data)
                     .id(requestId)

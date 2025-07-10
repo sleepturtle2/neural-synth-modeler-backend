@@ -22,7 +22,7 @@ import org.springframework.beans.factory.annotation.Value;
 import com.neuralsynthmodeler.backend.util.GzipUtils;
 import com.neuralsynthmodeler.backend.util.AudioFormatUtils;
 import com.neuralsynthmodeler.backend.util.AudioFormatUtils.AudioMetadata;
-import com.neuralsynthmodeler.backend.util.VitalPresetUtils;
+
 import com.neuralsynthmodeler.backend.repository.InferenceRequestRepository;
 import com.neuralsynthmodeler.backend.model.InferenceRequestEntity;
 import com.neuralsynthmodeler.backend.model.SynthType;
@@ -138,19 +138,16 @@ public class InferenceService {
         .subscribe(
             result -> {
                 logger.info("Inference completed successfully for request ID: {}", requestId);
-                
                 // Get audioRef from the entity
                 Optional<InferenceRequestEntity> entityOpt = inferenceRequestRepository.findById(requestId);
+                String synthType = entityOpt.map(InferenceRequestEntity::getSynth).orElse("vital");
                 String audioRef = entityOpt.map(InferenceRequestEntity::getAudioRef).orElse(null);
-                
                 if (audioRef != null) {
                     // Store preset in MongoDB with synth type and audio reference
-                    String presetRef = audioStorageService.storePreset(result, "vital", audioRef);
+                    String presetRef = audioStorageService.storePreset(result, synthType, audioRef);
                     logger.info("Preset stored in MongoDB with reference: {} (linked to audio: {})", presetRef, audioRef);
-                    
                     // Update MySQL record with result_ref and status
                     updateInferenceResult(requestId, presetRef, RequestStatus.DONE, null);
-                    
                     // Keep in cache for immediate access
                     resultCache.put(requestId, result);
                     statusStreamService.updateStatus(requestId, RequestStatus.DONE);
@@ -190,44 +187,11 @@ public class InferenceService {
                 .bodyToMono(byte[].class)
                 .doOnSuccess(result -> {
                     logger.info("Received response from BentoML for request ID: {}, size: {} bytes", requestId, result.length);
-                    validatePresetData(requestId, result);
                 })
                 .doOnError(error -> logger.error("BentoML request failed for request ID: {}", requestId, error));
     }
     
-    private void validatePresetData(String requestId, byte[] presetData) {
-        logger.info("Validating preset data for request ID: {}", requestId);
-        
-        if (presetData == null || presetData.length == 0) {
-            logger.error("Preset data is null or empty for request ID: {}", requestId);
-            return;
-        }
-        
-        try {
-            Optional<InferenceRequestEntity> entityOpt = inferenceRequestRepository.findById(requestId);
-            // Get synth type from the request entity
-            String synthType = entityOpt.map(InferenceRequestEntity::getSynth).orElse("vital");
-            
-            boolean isValid = validatePresetData(presetData, synthType);
-            
-            if (isValid) {
-                logger.info("Preset validation successful for request ID: {} (synth: {})", requestId, synthType);
-                
-                // Extract and log metadata if it's a Vital preset
-                if ("vital".equalsIgnoreCase(synthType)) {
-                    Optional<VitalPresetUtils.VitalPresetMetadata> metadata = VitalPresetUtils.extractMetadata(presetData);
-                    if (metadata.isPresent()) {
-                        logger.info("Vital preset metadata for request ID {}: {}", requestId, metadata.get());
-                    }
-                }
-            } else {
-                logger.error("Preset validation failed for request ID: {} (synth: {})", requestId, synthType);
-            }
-            
-        } catch (Exception e) {
-            logger.error("Error during preset validation for request ID: {}", requestId, e);
-        }
-    }
+
     
     private void updateInferenceResult(String requestId, String resultRef, RequestStatus status, String error) {
         try {
@@ -312,39 +276,10 @@ public class InferenceService {
         statusStreamService.clearStatus(requestId);
     }
 
-    /**
-     * Validates preset data based on synth type
-     */
-    public static boolean validatePresetData(byte[] presetData, String synthType) {
-        if (presetData == null || presetData.length == 0) {
-            logger.info("Preset data is null or empty");
-            return false;
-        }
-        try {
-            switch (synthType.toLowerCase()) {
-                case "vital":
-                    boolean isValidVital = VitalPresetUtils.isValidVitalPreset(presetData);
-                    if (isValidVital) {
-                        Optional<VitalPresetUtils.VitalPresetMetadata> metadata = VitalPresetUtils.extractMetadata(presetData);
-                        if (metadata.isPresent()) {
-                            logger.info("Valid Vital preset detected: {}", metadata.get());
-                        }
-                    } else {
-                        logger.warn("Invalid Vital preset data received");
-                    }
-                    return isValidVital;
-                case "dexed":
-                    // TODO: Add Dexed preset validation when implemented
-                    logger.warn("Dexed preset validation not yet implemented");
-                    return true; // For now, accept all Dexed presets
-                default:
-                    logger.warn("Unknown synth type for preset validation: {}", synthType);
-                    return false;
-            }
-        } catch (Exception e) {
-            logger.error("Error validating preset data for synth type {}: {}", synthType, e.getMessage());
-            return false;
-        }
+    public Optional<InferenceRequestEntity> getRequestEntity(String requestId) {
+        return inferenceRequestRepository.findById(requestId);
     }
+
+
 }
 
