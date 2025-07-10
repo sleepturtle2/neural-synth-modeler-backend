@@ -42,14 +42,16 @@ public class InferenceService {
     private final WebClient webClient;
     private final InferenceRequestRepository inferenceRequestRepository;
     private final AudioStorageService audioStorageService;
-    private final Map<String, RequestStatus> requestStatusMap = new ConcurrentHashMap<>();
+    private final StatusStreamService statusStreamService;
     private final Map<String, byte[]> resultCache = new ConcurrentHashMap<>();
 
     @Autowired
     public InferenceService(InferenceRequestRepository inferenceRequestRepository, 
-                           AudioStorageService audioStorageService) {
+                           AudioStorageService audioStorageService,
+                           StatusStreamService statusStreamService) {
         this.inferenceRequestRepository = inferenceRequestRepository;
         this.audioStorageService = audioStorageService;
+        this.statusStreamService = statusStreamService;
         this.webClient = WebClient.builder()
                 .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(50 * 1024 * 1024)) // 50MB
                 .build();
@@ -58,10 +60,6 @@ public class InferenceService {
     public static enum RequestStatus {
         PENDING, PROCESSING, DONE, ERROR
     }
-
-
-
-
 
     public Mono<Map<String, Object>> handleInference(byte[] audioData) {
         String requestId = UUID.randomUUID().toString();
@@ -79,7 +77,7 @@ public class InferenceService {
                 audioMetadata.getCompressedSize(), 
                 audioMetadata.getUncompressedSize()
             );
-            logger.info("Compressed audio stored in MongoDB with reference: {}, compressed: {} bytes, uncompressed: {} bytes", 
+            logger.info("Compressed audio stored in MongoDB with reference: {}, compressed: {} bytes, uncompressed: {} bytes",
                 audioRef, audioMetadata.getCompressedSize(), audioMetadata.getUncompressedSize());
             
             // Create and save inference request entity
@@ -97,8 +95,8 @@ public class InferenceService {
             
             inferenceRequestRepository.save(entity);
             
-            // Set initial status
-            requestStatusMap.put(requestId, RequestStatus.PENDING);
+            // Set initial status using StatusStreamService as single source of truth
+            statusStreamService.updateStatus(requestId, RequestStatus.PENDING);
             
             // Process asynchronously with decompressed audio
             processInferenceAsync(requestId, audioMetadata.getDecompressedData());
@@ -128,11 +126,11 @@ public class InferenceService {
         Mono.fromCallable(() -> {
             try {
                 logger.info("Processing audio for request ID: {}", requestId);
-                requestStatusMap.put(requestId, RequestStatus.PROCESSING);
+                statusStreamService.updateStatus(requestId, RequestStatus.PROCESSING);
                 return audioData;
             } catch (Exception e) {
                 logger.error("Failed to add request ID: {} to status map ", requestId);
-                requestStatusMap.put(requestId, RequestStatus.ERROR);
+                statusStreamService.updateStatus(requestId, RequestStatus.ERROR);
                 throw new RuntimeException("Failed to process audio", e);
             }
         })
@@ -155,17 +153,17 @@ public class InferenceService {
                     
                     // Keep in cache for immediate access
                     resultCache.put(requestId, result);
-                    requestStatusMap.put(requestId, RequestStatus.DONE);
+                    statusStreamService.updateStatus(requestId, RequestStatus.DONE);
                 } else {
                     logger.error("Could not find audioRef for request ID: {}", requestId);
                     updateInferenceResult(requestId, null, RequestStatus.ERROR, "Audio reference not found");
-                    requestStatusMap.put(requestId, RequestStatus.ERROR);
+                    statusStreamService.updateStatus(requestId, RequestStatus.ERROR);
                 }
             },
             error -> {
                 logger.error("Inference failed for request ID: {}", requestId, error);
                 updateInferenceResult(requestId, null, RequestStatus.ERROR, error.getMessage());
-                requestStatusMap.put(requestId, RequestStatus.ERROR);
+                statusStreamService.updateStatus(requestId, RequestStatus.ERROR);
             }
         );
     }
@@ -205,7 +203,6 @@ public class InferenceService {
             return;
         }
         
-        
         try {
             Optional<InferenceRequestEntity> entityOpt = inferenceRequestRepository.findById(requestId);
             // Get synth type from the request entity
@@ -232,8 +229,6 @@ public class InferenceService {
         }
     }
     
-
-    
     private void updateInferenceResult(String requestId, String resultRef, RequestStatus status, String error) {
         try {
             // Find existing entity
@@ -258,24 +253,15 @@ public class InferenceService {
     }
 
     public RequestStatus getStatus(String requestId) {
-        // First check in-memory cache
-        RequestStatus status = requestStatusMap.get(requestId);
-        if (status != null) {
-            return status;
-        }
-        
-        // Fall back to database
-        return inferenceRequestRepository.findById(requestId)
-                .map(entity -> {
-                    switch (entity.getStatus()) {
-                        case "PENDING": return RequestStatus.PENDING;
-                        case "PROCESSING": return RequestStatus.PROCESSING;
-                        case "DONE": return RequestStatus.DONE;
-                        case "ERROR": return RequestStatus.ERROR;
-                        default: return null;
-                    }
-                })
-                .orElse(null);
+        // Use StatusStreamService as single source of truth
+        return statusStreamService.getStatus(requestId);
+    }
+    
+    /**
+     * Get a Flux for real-time status updates for a specific request
+     */
+    public reactor.core.publisher.Flux<RequestStatus> getStatusStream(String requestId) {
+        return statusStreamService.getStatusStream(requestId);
     }
     
     public byte[] getResult(String requestId) {
@@ -323,37 +309,7 @@ public class InferenceService {
     
     public void clearResult(String requestId) {
         resultCache.remove(requestId);
-        requestStatusMap.remove(requestId);
-    }
-
-    public String processAudioFile(byte[] audioData) {
-        // Generate a unique request ID
-        String requestId = UUID.randomUUID().toString();
-        
-        // In a real implementation, you would:
-        // 1. Save the audio data to temporary storage
-        // 2. Queue the request for processing
-        // 3. Return the request ID immediately
-        
-        // For now, simulate processing by creating a dummy preset
-        byte[] dummyPreset = createDummyPreset(audioData);
-        resultCache.put(requestId, dummyPreset);
-        
-        return requestId;
-    }
-
-    private byte[] createDummyPreset(byte[] audioData) {
-        // Create a dummy .vital preset file
-        // In a real implementation, this would be generated by your ML model
-        String dummyPresetContent = "// Dummy Vital preset generated from audio\n" +
-                                   "// Audio size: " + audioData.length + " bytes\n" +
-                                   "// Generated at: " + System.currentTimeMillis() + "\n" +
-                                   "{\n" +
-                                   "  \"name\": \"Generated Preset\",\n" +
-                                   "  \"version\": \"1.0\",\n" +
-                                   "  \"parameters\": {}\n" +
-                                   "}";
-        return dummyPresetContent.getBytes();
+        statusStreamService.clearStatus(requestId);
     }
 
     /**

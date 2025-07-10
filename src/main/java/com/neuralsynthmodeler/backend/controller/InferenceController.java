@@ -7,6 +7,7 @@ import org.springframework.http.MediaType;
 import java.io.IOException;
 import org.springframework.beans.factory.annotation.Autowired;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Flux;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 import org.slf4j.Logger;
@@ -14,6 +15,10 @@ import org.slf4j.LoggerFactory;
 import com.neuralsynthmodeler.backend.service.InferenceService;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.codec.ServerSentEvent;
+import javax.sql.DataSource;
+import com.mongodb.client.MongoDatabase;
+import com.mongodb.MongoException;
 
 
 @RestController
@@ -25,16 +30,22 @@ public class InferenceController {
     private final String pythonServiceUrl;
     private static final String SUPPORTED_MODEL = "vital";
     private static final Logger logger = LoggerFactory.getLogger(InferenceController.class);
+    private final DataSource dataSource;
+    private final MongoDatabase mongoDatabase;
 
     @Autowired
     public InferenceController(InferenceService inferenceService, 
                               WebClient.Builder webClientBuilder,
-                              @Value("${model.server.url}") String pythonServiceUrl) {
+                              @Value("${model.server.url}") String pythonServiceUrl,
+                              DataSource dataSource,
+                              MongoDatabase mongoDatabase) {
         this.inferenceService = inferenceService;
         this.pythonServiceUrl = pythonServiceUrl;
         this.webClient = webClientBuilder
             .baseUrl(pythonServiceUrl)
             .build();
+        this.dataSource = dataSource;
+        this.mongoDatabase = mongoDatabase;
     }
 
     @GetMapping("")
@@ -48,14 +59,46 @@ public class InferenceController {
         });
     }
 
-    @GetMapping("/health/live")
-    public Mono<Map<String, Boolean>> healthLive() {
-        return Mono.just(Collections.singletonMap("live", true));
-    }
-
     @GetMapping("/health/ready")
-    public Mono<Map<String, Boolean>> healthReady() {
-        return Mono.just(Collections.singletonMap("ready", true));
+    public Mono<ResponseEntity<Map<String, Object>>> healthReady() {
+        Map<String, Object> status = new HashMap<>();
+        // Check MySQL
+        try (java.sql.Connection conn = dataSource.getConnection()) {
+            if (!conn.isValid(2)) {
+                status.put("mysql", "Connection is not valid");
+            } else {
+                status.put("mysql", "ok");
+            }
+        } catch (Exception e) {
+            status.put("mysql", "Error: " + e.getMessage());
+        }
+        // Check MongoDB
+        try {
+            mongoDatabase.runCommand(new org.bson.Document("ping", 1));
+            status.put("mongo", "ok");
+        } catch (Exception e) {
+            status.put("mongo", "Error: " + e.getMessage());
+        }
+        // Check BentoML
+        return webClient.get()
+            .uri("/healthz")
+            .retrieve()
+            .bodyToMono(String.class)
+            .map(resp -> {
+                status.put("bentoml", "ok");
+                boolean allOk = status.values().stream().allMatch(v -> "ok".equals(v));
+                Map<String, Object> result = new HashMap<>();
+                result.put("ready", allOk);
+                if (!allOk) result.put("details", status);
+                return ResponseEntity.ok(result);
+            })
+            .onErrorResume(e -> {
+                status.put("bentoml", "Error: " + e.getMessage());
+                Map<String, Object> result = new HashMap<>();
+                result.put("ready", false);
+                result.put("details", status);
+                return Mono.just(ResponseEntity.status(503).body(result));
+            });
     }
 
     @GetMapping("/models/{modelName}")
@@ -108,6 +151,26 @@ public class InferenceController {
             resp.put("status", status != null ? status.name() : "NOT_FOUND");
             return resp;
         });
+    }
+
+    @GetMapping(value = "/infer-audio/stream-status/{id}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<Map<String, Object>>> streamStatus(@PathVariable("id") String requestId) {
+        logger.info("Starting SSE stream for request ID: {}", requestId);
+        
+        return inferenceService.getStatusStream(requestId)
+            .map(status -> {
+                Map<String, Object> data = new HashMap<>();
+                data.put("status", status.name());
+                data.put("timestamp", System.currentTimeMillis());
+                
+                return ServerSentEvent.<Map<String, Object>>builder()
+                    .data(data)
+                    .id(requestId)
+                    .event("status_update")
+                    .build();
+            })
+            .doOnComplete(() -> logger.info("SSE stream completed for request ID: {}", requestId))
+            .doOnError(error -> logger.error("SSE stream error for request ID: {}", requestId, error));
     }
 
     @GetMapping("/preset/{id}")

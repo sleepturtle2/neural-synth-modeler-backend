@@ -19,6 +19,8 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @org.springframework.test.context.ActiveProfiles("test")
@@ -91,6 +93,58 @@ public class InferenceControllerIntegrationTest {
         } else {
             System.out.println("Inference did not complete successfully. Final status: " + finalStatus);
             System.out.println("This is expected if BentoML service is not running on localhost:3000");
+        }
+    }
+
+    @Test
+    public void testStreamStatusEndpoint() {
+        // First create a request to get a request ID
+        byte[] audioData = loadTestAudioFile();
+        
+        // Upload audio and get request ID
+        String requestId = webTestClient.post()
+                .uri("/v1/models/vital/infer")
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .bodyValue(audioData)
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody(Map.class)
+                .returnResult()
+                .getResponseBody()
+                .get("request_id")
+                .toString();
+        
+        assertThat(requestId).isNotNull();
+        
+        // Test SSE endpoint
+        List<Map> statusUpdates = webTestClient.get()
+                .uri("/v1/infer-audio/stream-status/" + requestId)
+                .accept(MediaType.TEXT_EVENT_STREAM)
+                .exchange()
+                .expectStatus().isOk()
+                .expectBodyList(Map.class)
+                .returnResult()
+                .getResponseBody();
+        
+        assertThat(statusUpdates).isNotNull();
+        assertThat(statusUpdates).isNotEmpty();
+        
+        // Verify the structure of status updates
+        Map<String, Object> firstUpdate = statusUpdates.get(0);
+        assertThat(firstUpdate.get("request_id")).isNotNull();
+        assertThat(firstUpdate.get("status")).isNotNull();
+        assertThat(firstUpdate.get("timestamp")).isNotNull();
+        
+        System.out.println("SSE Status updates received: " + statusUpdates.size());
+        statusUpdates.forEach(update -> 
+            System.out.println("Status: " + update.get("status") + " at " + update.get("timestamp")));
+    }
+
+    private byte[] loadTestAudioFile() {
+        try {
+            return Files.readAllBytes(new ClassPathResource("training.wav.gz").getFile().toPath());
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to load test audio file", e);
         }
     }
 }
