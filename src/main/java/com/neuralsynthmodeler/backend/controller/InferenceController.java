@@ -65,19 +65,19 @@ public class InferenceController {
         // Check MySQL
         try (java.sql.Connection conn = dataSource.getConnection()) {
             if (!conn.isValid(2)) {
-                status.put("mysql", "Connection is not valid");
+                status.put("mysql", "MySQL unreachable: Connection is not valid");
             } else {
                 status.put("mysql", "ok");
             }
         } catch (Exception e) {
-            status.put("mysql", "Error: " + e.getMessage());
+            status.put("mysql", "MySQL unreachable: " + e.getMessage());
         }
         // Check MongoDB
         try {
             mongoDatabase.runCommand(new org.bson.Document("ping", 1));
             status.put("mongo", "ok");
         } catch (Exception e) {
-            status.put("mongo", "Error: " + e.getMessage());
+            status.put("mongo", "MongoDB unreachable: " + e.getMessage());
         }
         // Check BentoML
         return webClient.get()
@@ -93,7 +93,7 @@ public class InferenceController {
                 return ResponseEntity.ok(result);
             })
             .onErrorResume(e -> {
-                status.put("bentoml", "Error: " + e.getMessage());
+                status.put("bentoml", "BentoML unreachable: " + e.getMessage());
                 Map<String, Object> result = new HashMap<>();
                 result.put("ready", false);
                 result.put("details", status);
