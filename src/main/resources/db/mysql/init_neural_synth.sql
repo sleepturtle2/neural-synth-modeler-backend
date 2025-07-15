@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS INFERENCE_REQUEST (
     created_at DATETIME(3) NOT NULL,
     updated_at DATETIME(3) NOT NULL,
     audio_ref VARCHAR(64) NOT NULL,
+    audio_size_gzipped INT NOT NULL,
+    audio_size_uncompressed INT NOT NULL,
     result_ref VARCHAR(64),
     error TEXT,
     meta JSON

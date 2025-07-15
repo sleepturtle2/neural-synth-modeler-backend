@@ -10,11 +10,10 @@ services:
       - SPRING_PROFILES_ACTIVE=docker
       - MYSQL_URL=jdbc:mysql://mysql:3306/NEURAL_SYNTH
       - MONGODB_URI=mongodb://mongodb:27017/neural_synth
-      - MODEL_SERVER_URL=http://neural-synth-modeler:3000
+      - MODEL_SERVER_URL=http://host.docker.internal:3000
     depends_on:
       - mysql
       - mongodb
-      - neural-synth-modeler
     networks:
       - neural-synth-network
     restart: unless-stopped
@@ -46,15 +45,6 @@ services:
     volumes:
       - mongodb_data:/data/db
       - ./src/main/resources/db/mongo/audio_request_collection_init.js:/docker-entrypoint-initdb.d/audio_request_collection_init.js:ro
-    networks:
-      - neural-synth-network
-    restart: unless-stopped
-
-  # BentoML Model Service (external service - you'll need to build this separately)
-  neural-synth-modeler:
-    image: neural-synth-modeler:latest
-    ports:
-      - "3000:3000"
     networks:
       - neural-synth-network
     restart: unless-stopped
